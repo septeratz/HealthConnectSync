@@ -38,7 +38,8 @@ android {
 dependencies {
 
     implementation("androidx.health.connect:connect-client:1.1.0-alpha08")
-
+    implementation (libs.retrofit)
+    implementation (libs.retrofit2.converter.gson)
     implementation("androidx.core:core:1.14.0-alpha01")
     implementation("androidx.core:core-ktx:1.14.0-alpha01")
     implementation(libs.androidx.appcompat)

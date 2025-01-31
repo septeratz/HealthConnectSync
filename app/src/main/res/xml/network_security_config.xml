@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<network-security-config>
+    <!-- 예: 전체 cleartext 허용 -->
+    <domain-config cleartextTrafficPermitted="true">
+        <!-- 로컬호스트 또는 내부 IP 등을 설정 -->
+        <domain includeSubdomains="true">10.0.2.2</domain>
+        <!-- 또는 실제 PC IP, 예: 192.168.0.10 -->
+    </domain-config>
+</network-security-config>

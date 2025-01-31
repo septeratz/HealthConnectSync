@@ -9,12 +9,9 @@ import android.os.Bundle
 import android.os.Environment
 import android.os.Handler
 import android.os.Looper
+import android.text.InputType
 import android.util.Log
-import android.widget.Button
-import android.widget.LinearLayout
-import android.widget.ScrollView
-import android.widget.TextView
-import androidx.activity.result.ActivityResultLauncher
+import android.widget.*
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
@@ -31,8 +28,10 @@ import com.google.android.gms.wearable.Wearable
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import retrofit2.Call
+import retrofit2.Callback
+import retrofit2.Response
 import java.io.File
-import java.io.FileWriter
 import java.io.IOException
 import java.time.Instant
 import java.time.ZoneId
@@ -47,7 +46,6 @@ class MainActivity : AppCompatActivity(), DataClient.OnDataChangedListener, Sens
         HealthPermission.getWritePermission(HeartRateRecord::class)
     )
 
-
     private val csvHeader = "Timestamp,Data Type,Value\n"
     private val csvFileName = "health_data.csv"
 
@@ -59,26 +57,34 @@ class MainActivity : AppCompatActivity(), DataClient.OnDataChangedListener, Sens
     private var heartRateSensor: Sensor? = null
     private var stepCounterSensor: Sensor? = null
 
-    private val handler = Handler(Looper.getMainLooper()) // 반복 실행을 위한 핸들러
-    private val updateInterval = 1000L // 5분 간격 (밀리초)
+    private val handler = Handler(Looper.getMainLooper())
+    private val updateInterval = 1000L // 주기적으로 기록할 간격 (예: 1000ms = 1초)
 
-    private var currentHeartRate: Int = 0 // 실시간 심박수 저장
-    private var currentStepCount: Long = 0 // 실시간 걸음 수 저장
+    private var currentHeartRate: Int = 0
+    private var currentStepCount: Long = 0
+
+    // ▼ 추가 UI 컴포넌트를 멤버 변수로 선언 (동적 생성 시 저장할 참조)
+    private lateinit var stateSpinner: Spinner
+    private lateinit var drinkAmountEditText: EditText
+    private lateinit var alcoholPercentageEditText: EditText
+    // ▲
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        // UI 구성
+        // 레이아웃(LinearLayout) 동적 생성
         val layout = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
         }
 
+        // 스크롤뷰, 로그창(TextView)
         scrollView = ScrollView(this)
         textView = TextView(this).apply {
             text = "Initializing...\n"
         }
         scrollView.addView(textView)
 
+        // 버튼 3개
         val requestPermissionButton = Button(this).apply {
             text = "권한 요청"
         }
@@ -89,15 +95,38 @@ class MainActivity : AppCompatActivity(), DataClient.OnDataChangedListener, Sens
             text = "데이터 기록 중지"
         }
 
-        // DataClient 초기화
+        // DataClient 초기화 & 리스너 등록
         dataClient = Wearable.getDataClient(this)
-
-        // 데이터 리스너 등록
         dataClient.addListener(this)
 
+        // 레이아웃에 버튼 추가
         layout.addView(requestPermissionButton)
         layout.addView(startRecordingButton)
         layout.addView(stopRecordingButton)
+
+        // ▼ 추가로 "현재 상태(평상시/음주 중)" Spinner
+        stateSpinner = Spinner(this).apply {
+            val states = listOf("평상시", "음주 중")
+            val adapter = ArrayAdapter(this@MainActivity, android.R.layout.simple_spinner_item, states)
+            adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
+            setAdapter(adapter)
+        }
+        layout.addView(stateSpinner)
+
+        // ▼ "음주량" EditText
+        drinkAmountEditText = EditText(this).apply {
+            hint = "음주량 (예: 2잔)"
+        }
+        layout.addView(drinkAmountEditText)
+
+        // ▼ "술 도수" EditText
+        alcoholPercentageEditText = EditText(this).apply {
+            hint = "술 도수 (예: 20)"
+            inputType = InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL
+        }
+        layout.addView(alcoholPercentageEditText)
+
+        // 스크롤뷰 마지막에 추가
         layout.addView(scrollView)
         setContentView(layout)
 
@@ -117,7 +146,7 @@ class MainActivity : AppCompatActivity(), DataClient.OnDataChangedListener, Sens
         heartRateSensor = sensorManager.getDefaultSensor(Sensor.TYPE_HEART_RATE)
         stepCounterSensor = sensorManager.getDefaultSensor(Sensor.TYPE_STEP_COUNTER)
 
-        // 권한 요청
+        // 권한 요청 버튼
         requestPermissionButton.setOnClickListener {
             CoroutineScope(Dispatchers.Main).launch {
                 if (healthConnectClient == null) {
@@ -126,7 +155,9 @@ class MainActivity : AppCompatActivity(), DataClient.OnDataChangedListener, Sens
                 }
                 val granted = healthConnectClient!!.permissionController.getGrantedPermissions()
                 if (!granted.containsAll(permissions)) {
-                    registerForActivityResult(PermissionController.createRequestPermissionResultContract()) { grantedPermissions ->
+                    registerForActivityResult(
+                        PermissionController.createRequestPermissionResultContract()
+                    ) { grantedPermissions ->
                         if (grantedPermissions.containsAll(permissions)) {
                             textView.append("모든 권한이 허용되었습니다.\n")
                         } else {
@@ -139,74 +170,37 @@ class MainActivity : AppCompatActivity(), DataClient.OnDataChangedListener, Sens
             }
         }
 
-        // 데이터 기록 시작
+        // 기록 시작 버튼
         startRecordingButton.setOnClickListener {
             textView.append("데이터 기록을 시작합니다...\n")
             sensorManager.registerListener(this, heartRateSensor, SensorManager.SENSOR_DELAY_NORMAL)
             sensorManager.registerListener(this, stepCounterSensor, SensorManager.SENSOR_DELAY_NORMAL)
-            handler.post(dataRecordingRunnable(textView, scrollView))
+            handler.post(dataRecordingRunnable())
         }
 
-        // 데이터 기록 중지
+        // 기록 중지 버튼
         stopRecordingButton.setOnClickListener {
             textView.append("데이터 기록을 중지합니다.\n")
             sensorManager.unregisterListener(this)
             handler.removeCallbacksAndMessages(null)
         }
-
-
-    }
-    private fun saveToCsv(dataType: String, value: String, timestamp: String? = null) {
-        try {
-            val directory = getExternalFilesDir(Environment.DIRECTORY_DOCUMENTS)
-            if (!directory?.exists()!!) {
-                directory.mkdir()
-            }
-
-            val csvFile = File(directory, csvFileName)
-
-            // 파일이 없으면 헤더 추가
-            if (!csvFile.exists()) {
-                csvFile.createNewFile()
-                csvFile.appendText(csvHeader)
-            }
-
-            // 데이터 추가
-            val row = "${timestamp ?: getCurrentTimestamp()},$dataType,$value\n"
-            csvFile.appendText(row)
-
-            runOnUiThread {
-                textView.append("CSV에 저장: $row")
-                scrollView.post { scrollView.fullScroll(ScrollView.FOCUS_DOWN) }
-            }
-        } catch (e: IOException) {
-            e.printStackTrace()
-            runOnUiThread {
-                textView.append("CSV 저장 실패: ${e.message}\n")
-                scrollView.post { scrollView.fullScroll(ScrollView.FOCUS_DOWN) }
-            }
-        }
     }
 
-    private fun getCurrentTimestamp(): String {
-        return Instant.now()
-            .atZone(ZoneId.systemDefault())
-            .format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"))
-    }
-
-    private fun dataRecordingRunnable(textView: TextView, scrollView: ScrollView): Runnable {
+    // 주기적으로(예: 1초) 실행되는 Runnable
+    private fun dataRecordingRunnable(): Runnable {
         return object : Runnable {
             override fun run() {
-                recordHeartRateData(textView, scrollView)
-                recordStepsData(textView, scrollView)
+                recordHeartRateData()
+                recordStepsData()
 
-                // 5분 후 다시 실행
+                // 다음 주기에 다시 실행
                 handler.postDelayed(this, updateInterval)
             }
         }
     }
 
-    private fun recordHeartRateData(textView: TextView, scrollView: ScrollView) {
+    // Health Connect에 심박수 기록
+    private fun recordHeartRateData() {
         CoroutineScope(Dispatchers.IO).launch {
             if (healthConnectClient == null) return@launch
             try {
@@ -217,7 +211,7 @@ class MainActivity : AppCompatActivity(), DataClient.OnDataChangedListener, Sens
                     samples = listOf(
                         HeartRateRecord.Sample(
                             time = now,
-                            beatsPerMinute = currentHeartRate.toLong() // 센서에서 읽은 심박수 값
+                            beatsPerMinute = currentHeartRate.toLong()
                         )
                     ),
                     startZoneOffset = ZoneOffset.UTC,
@@ -225,22 +219,16 @@ class MainActivity : AppCompatActivity(), DataClient.OnDataChangedListener, Sens
                 )
 
                 healthConnectClient!!.insertRecords(listOf(heartRateRecord))
-
-                CoroutineScope(Dispatchers.Main).launch {
-                    textView.append("심박수 데이터 기록 완료: $currentHeartRate bpm\n")
-                    scrollView.post { scrollView.fullScroll(ScrollView.FOCUS_DOWN) }
-                }
+                appendToTextView("심박수 데이터 기록 완료: $currentHeartRate bpm")
             } catch (e: Exception) {
                 e.printStackTrace()
-                CoroutineScope(Dispatchers.Main).launch {
-                    textView.append("심박수 데이터 기록 오류: ${e.message}\n")
-                    scrollView.post { scrollView.fullScroll(ScrollView.FOCUS_DOWN) }
-                }
+                appendToTextView("심박수 데이터 기록 오류: ${e.message}")
             }
         }
     }
 
-    private fun recordStepsData(textView: TextView, scrollView: ScrollView) {
+    // Health Connect에 걸음 수 기록
+    private fun recordStepsData() {
         CoroutineScope(Dispatchers.IO).launch {
             if (healthConnectClient == null) return@launch
             try {
@@ -248,27 +236,21 @@ class MainActivity : AppCompatActivity(), DataClient.OnDataChangedListener, Sens
                 val stepsRecord = StepsRecord(
                     startTime = now.minusSeconds(300), // 5분 전
                     endTime = now,
-                    count = currentStepCount, // 센서에서 읽은 걸음 수
+                    count = currentStepCount,
                     startZoneOffset = ZoneOffset.UTC,
                     endZoneOffset = ZoneOffset.UTC
                 )
 
                 healthConnectClient!!.insertRecords(listOf(stepsRecord))
-
-                CoroutineScope(Dispatchers.Main).launch {
-                    textView.append("걸음 수 데이터 기록 완료: $currentStepCount 걸음\n")
-                    scrollView.post { scrollView.fullScroll(ScrollView.FOCUS_DOWN) }
-                }
+                appendToTextView("걸음 수 데이터 기록 완료: $currentStepCount 걸음")
             } catch (e: Exception) {
                 e.printStackTrace()
-                CoroutineScope(Dispatchers.Main).launch {
-                    textView.append("걸음 수 데이터 기록 오류: ${e.message}\n")
-                    scrollView.post { scrollView.fullScroll(ScrollView.FOCUS_DOWN) }
-                }
+                appendToTextView("걸음 수 데이터 기록 오류: ${e.message}")
             }
         }
     }
 
+    // 센서 수신 콜백
     override fun onSensorChanged(event: SensorEvent?) {
         if (event == null) return
         when (event.sensor.type) {
@@ -282,9 +264,10 @@ class MainActivity : AppCompatActivity(), DataClient.OnDataChangedListener, Sens
     }
 
     override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {
-        // 정확도 변경 이벤트 처리 (필요시 구현)
+        // 필요시 구현
     }
 
+    // 워치 측으로부터 DataEvent 수신
     override fun onDataChanged(dataEvents: DataEventBuffer) {
         for (event in dataEvents) {
             if (event.type == DataEvent.TYPE_CHANGED) {
@@ -299,21 +282,93 @@ class MainActivity : AppCompatActivity(), DataClient.OnDataChangedListener, Sens
                         val heartRate = dataMap.getInt("value")
                         appendToTextView("심박수: $heartRate bpm")
                         saveToCsv("Heart Rate", heartRate.toString(), timestamp)
-
+                        // 서버에 전송
+                        sendDataToServer(timestamp, heartRate, null)
                     }
                     "skin_temperature" -> {
                         val skinTemperature = dataMap.getFloat("value")
                         appendToTextView("피부 온도: $skinTemperature°C")
                         saveToCsv("Skin Temperature", skinTemperature.toString(), timestamp)
+                        // 서버에 전송
+                        sendDataToServer(timestamp, null, skinTemperature)
                     }
                 }
             }
         }
     }
-    private fun appendToTextView(text: String) {
+
+    // CSV 파일 저장
+    private fun saveToCsv(dataType: String, value: String, timestamp: String? = null) {
+        try {
+            val directory = getExternalFilesDir(Environment.DIRECTORY_DOCUMENTS)
+            if (directory?.exists() == false) {
+                directory.mkdir()
+            }
+            val csvFile = File(directory, csvFileName)
+
+            // 파일이 없으면 헤더 추가
+            if (!csvFile.exists()) {
+                csvFile.createNewFile()
+                csvFile.appendText(csvHeader)
+            }
+
+            val row = "${timestamp ?: getCurrentTimestamp()},$dataType,$value\n"
+            csvFile.appendText(row)
+
+            appendToTextView("CSV에 저장: $row")
+        } catch (e: IOException) {
+            e.printStackTrace()
+            appendToTextView("CSV 저장 실패: ${e.message}")
+        }
+    }
+
+    private fun getCurrentTimestamp(): String {
+        return Instant.now()
+            .atZone(ZoneId.systemDefault())
+            .format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"))
+    }
+
+    // 텍스트뷰 로그 출력
+    private fun appendToTextView(msg: String) {
         runOnUiThread {
-            textView.append("$text\n")
+            textView.append("$msg\n")
             scrollView.post { scrollView.fullScroll(ScrollView.FOCUS_DOWN) }
         }
     }
+
+    // ▼ 서버에 데이터를 전송하는 함수 (Retrofit 활용)
+    private fun sendDataToServer(
+        timestamp: String,
+        heartRate: Int?,
+        skinTemp: Float?
+    ) {
+        // Spinner/EditText에서 입력값 읽어오기
+        val userState = stateSpinner.selectedItem.toString() // "평상시" or "음주 중"
+        val drinkAmount = drinkAmountEditText.text.toString()
+        val alcoholPercentage = alcoholPercentageEditText.text.toString().toFloatOrNull()
+
+        val requestData = SensorDataRequest(
+            timestamp = timestamp,
+            heartRate = heartRate,
+            skinTemperature = skinTemp,
+            userState = userState,
+            drinkAmount = if (userState == "음주 중") drinkAmount else null,
+            alcoholPercentage = if (userState == "음주 중") alcoholPercentage else null
+        )
+
+        RetrofitClient.api.sendSensorData(requestData)
+            .enqueue(object : Callback<Void> {
+                override fun onResponse(call: Call<Void>, response: Response<Void>) {
+                    if (response.isSuccessful) {
+                        appendToTextView("서버에 데이터 전송 성공!")
+                    } else {
+                        appendToTextView("서버 응답 오류: ${response.code()}")
+                    }
+                }
+                override fun onFailure(call: Call<Void>, t: Throwable) {
+                    appendToTextView("서버 전송 실패: ${t.message}")
+                }
+            })
+    }
+    // ▲
 }

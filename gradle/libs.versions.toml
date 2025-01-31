@@ -2,6 +2,7 @@
 agp = "8.7.2"
 connectClient = "1.1.0-alpha10"
 connectClientVersion = "1.1.0-alpha01"
+converterGsonVersion = "2.9.0"
 kotlin = "1.9.24"
 coreKtx = "1.15.0"
 junit = "4.13.2"
@@ -25,6 +26,8 @@ material = { group = "com.google.android.material", name = "material", version.r
 androidx-activity = { group = "androidx.activity", name = "activity", version.ref = "activity" }
 androidx-constraintlayout = { group = "androidx.constraintlayout", name = "constraintlayout", version.ref = "constraintlayout" }
 play-services-wearable = { group = "com.google.android.gms", name = "play-services-wearable", version.ref = "playServicesWearable" }
+retrofit = { module = "com.squareup.retrofit2:retrofit", version.ref = "converterGsonVersion" }
+retrofit2-converter-gson = { module = "com.squareup.retrofit2:converter-gson", version.ref = "converterGsonVersion" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }
