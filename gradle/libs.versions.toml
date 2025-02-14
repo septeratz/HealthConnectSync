@@ -13,6 +13,8 @@ material = "1.12.0"
 activity = "1.9.3"
 constraintlayout = "2.2.0"
 playServicesWearable = "19.0.0"
+storage = "1.5.0"
+volley = "1.2.1"
 
 [libraries]
 androidx-connect-client = { module = "androidx.health.connect:connect-client", version.ref = "connectClient" }
@@ -28,6 +30,8 @@ androidx-constraintlayout = { group = "androidx.constraintlayout", name = "const
 play-services-wearable = { group = "com.google.android.gms", name = "play-services-wearable", version.ref = "playServicesWearable" }
 retrofit = { module = "com.squareup.retrofit2:retrofit", version.ref = "converterGsonVersion" }
 retrofit2-converter-gson = { module = "com.squareup.retrofit2:converter-gson", version.ref = "converterGsonVersion" }
+androidx-storage = { group = "androidx.test.services", name = "storage", version.ref = "storage" }
+volley = { group = "com.android.volley", name = "volley", version.ref = "volley" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }

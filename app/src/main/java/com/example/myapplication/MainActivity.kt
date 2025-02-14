@@ -37,6 +37,21 @@ import java.time.Instant
 import java.time.ZoneId
 import java.time.ZoneOffset
 import java.time.format.DateTimeFormatter
+import com.amplifyframework.api.aws.AWSApiPlugin
+import com.amplifyframework.core.Amplify
+import com.amplifyframework.core.configuration.AmplifyOutputs
+import com.amplifyframework.AmplifyException
+import com.amplifyframework.api.graphql.model.ModelMutation
+import com.amplifyframework.auth.cognito.AWSCognitoAuthPlugin
+import com.amplifyframework.datastore.generated.model.Todo
+import com.example.myapplication.R.raw.amplify_outputs
+import com.amplifyframework.datastore.AWSDataStorePlugin
+import com.android.volley.Request
+import com.android.volley.toolbox.JsonObjectRequest
+import com.android.volley.toolbox.Volley
+import org.json.JSONObject
+import org.w3c.dom.Text
+
 
 class MainActivity : AppCompatActivity(), DataClient.OnDataChangedListener, SensorEventListener {
 
@@ -69,6 +84,9 @@ class MainActivity : AppCompatActivity(), DataClient.OnDataChangedListener, Sens
     private lateinit var alcoholPercentageEditText: EditText
     // ▲
 
+    // ▼ 음주 잔 수 표시를 위한 TextView 추가
+    private lateinit var drinkCountTextView: TextView
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
@@ -77,6 +95,14 @@ class MainActivity : AppCompatActivity(), DataClient.OnDataChangedListener, Sens
             orientation = LinearLayout.VERTICAL
         }
 
+
+// onCreate() 내 레이아웃 구성 부분에 추가
+        drinkCountTextView = TextView(this).apply {
+            text = "현재 음주 잔 수: 0잔"
+            textSize = 18f
+            setPadding(0, 16, 0, 16)
+        }
+        layout.addView(drinkCountTextView) // 기존 레이아웃에 추가
         // 스크롤뷰, 로그창(TextView)
         scrollView = ScrollView(this)
         textView = TextView(this).apply {
@@ -173,9 +199,8 @@ class MainActivity : AppCompatActivity(), DataClient.OnDataChangedListener, Sens
         // 기록 시작 버튼
         startRecordingButton.setOnClickListener {
             textView.append("데이터 기록을 시작합니다...\n")
-            sensorManager.registerListener(this, heartRateSensor, SensorManager.SENSOR_DELAY_NORMAL)
-            sensorManager.registerListener(this, stepCounterSensor, SensorManager.SENSOR_DELAY_NORMAL)
             handler.post(dataRecordingRunnable())
+            // sendDataToAWS("2025-02-12T12:34:56Z", 75,"음주 중", 2, 12.5f) -> 테스트용, 주석 풀면 이렇게 데이터 들어감
         }
 
         // 기록 중지 버튼
@@ -191,8 +216,6 @@ class MainActivity : AppCompatActivity(), DataClient.OnDataChangedListener, Sens
         return object : Runnable {
             override fun run() {
                 recordHeartRateData()
-                recordStepsData()
-
                 // 다음 주기에 다시 실행
                 handler.postDelayed(this, updateInterval)
             }
@@ -227,29 +250,6 @@ class MainActivity : AppCompatActivity(), DataClient.OnDataChangedListener, Sens
         }
     }
 
-    // Health Connect에 걸음 수 기록
-    private fun recordStepsData() {
-        CoroutineScope(Dispatchers.IO).launch {
-            if (healthConnectClient == null) return@launch
-            try {
-                val now = Instant.now()
-                val stepsRecord = StepsRecord(
-                    startTime = now.minusSeconds(300), // 5분 전
-                    endTime = now,
-                    count = currentStepCount,
-                    startZoneOffset = ZoneOffset.UTC,
-                    endZoneOffset = ZoneOffset.UTC
-                )
-
-                healthConnectClient!!.insertRecords(listOf(stepsRecord))
-                appendToTextView("걸음 수 데이터 기록 완료: $currentStepCount 걸음")
-            } catch (e: Exception) {
-                e.printStackTrace()
-                appendToTextView("걸음 수 데이터 기록 오류: ${e.message}")
-            }
-        }
-    }
-
     // 센서 수신 콜백
     override fun onSensorChanged(event: SensorEvent?) {
         if (event == null) return
@@ -272,30 +272,45 @@ class MainActivity : AppCompatActivity(), DataClient.OnDataChangedListener, Sens
         for (event in dataEvents) {
             if (event.type == DataEvent.TYPE_CHANGED) {
                 val dataMap = DataMapItem.fromDataItem(event.dataItem).dataMap
-                val key = dataMap.getString("key") ?: continue
                 val timestamp = Instant.ofEpochMilli(dataMap.getLong("timestamp"))
                     .atZone(ZoneId.systemDefault())
                     .format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"))
 
-                when (key) {
-                    "heart_rate" -> {
-                        val heartRate = dataMap.getInt("value")
-                        appendToTextView("심박수: $heartRate bpm")
-                        saveToCsv("Heart Rate", heartRate.toString(), timestamp)
-                        // 서버에 전송
-                        sendDataToServer(timestamp, heartRate, null)
+                var receivedHeartRate: Int? = null
+                var receivedDrinkCount: Int? = null
+
+                // 🔹 심박수 데이터 수신
+                if (dataMap.containsKey("heart_rate")) {
+                    receivedHeartRate = dataMap.getInt("heart_rate")
+                    Log.d("PhoneApp", "심박수 수신: $receivedHeartRate bpm")
+                    runOnUiThread {
+                        appendToTextView("심박수: $receivedHeartRate bpm")
+                        saveToCsv("Heart Rate", receivedHeartRate.toString(), timestamp)
                     }
-                    "skin_temperature" -> {
-                        val skinTemperature = dataMap.getFloat("value")
-                        appendToTextView("피부 온도: $skinTemperature°C")
-                        saveToCsv("Skin Temperature", skinTemperature.toString(), timestamp)
-                        // 서버에 전송
-                        sendDataToServer(timestamp, null, skinTemperature)
+                }
+
+                // 🔹 음주 잔 수 데이터 수신
+                if (dataMap.containsKey("drink_count")) {
+                    receivedDrinkCount = dataMap.getInt("drink_count")
+                    Log.d("PhoneApp", "음주 잔 수 수신: $receivedDrinkCount")
+                    runOnUiThread {
+                        drinkCountTextView.text = "현재 음주 잔 수: ${receivedDrinkCount}잔"
                     }
+                    saveToCsv("Drink Count", receivedDrinkCount.toString(), timestamp)
+                }
+
+                // 🔹 한 번만 서버로 전송 (둘 중 하나라도 값이 있을 경우)
+                if (receivedHeartRate != null || receivedDrinkCount != null) {
+                    sendDataToServer(timestamp, receivedHeartRate, receivedDrinkCount)
+
                 }
             }
         }
     }
+
+
+
+
 
     // CSV 파일 저장
     private fun saveToCsv(dataType: String, value: String, timestamp: String? = null) {
@@ -336,39 +351,49 @@ class MainActivity : AppCompatActivity(), DataClient.OnDataChangedListener, Sens
         }
     }
 
+    // js 연동용 함수, 쓸 거면 본인 node 열어서 쓰기. 사용하지 않음
+    private fun sendDataToJS(
+        timestamp: String,
+        heartRate: Int?,
+        drinkCount: Int?,
+        userState: String,
+        drinkAmount: Int?,
+        alcoholPercentage: Float?
+    ) {
+        val jsonData = JSONObject().apply {
+            put("timestamp", timestamp)
+            put("heart_rate", heartRate)
+            put("drink_count", drinkCount)
+            put("user_state", userState)
+            put("drink_amount", drinkAmount)
+            put("alcohol_percentage", alcoholPercentage)
+        }
+
+        val url = "https://your-nextjs-backend.com/api/sensor"
+
+        val request = JsonObjectRequest(
+            Request.Method.POST, url, jsonData,
+            { response -> Log.i("Next.js API", "Data sent: $response") },
+            { error -> Log.e("Next.js API", "Failed to send data", error) }
+        )
+
+        val requestQueue = Volley.newRequestQueue(this)
+        requestQueue.add(request)
+    }
+
     // ▼ 서버에 데이터를 전송하는 함수 (Retrofit 활용)
     private fun sendDataToServer(
         timestamp: String,
         heartRate: Int?,
-        skinTemp: Float?
+        drinkCount: Int? = null  // 새로 추가된 파라미터
     ) {
         // Spinner/EditText에서 입력값 읽어오기
         val userState = stateSpinner.selectedItem.toString() // "평상시" or "음주 중"
-        val drinkAmount = drinkAmountEditText.text.toString()
         val alcoholPercentage = alcoholPercentageEditText.text.toString().toFloatOrNull()
 
-        val requestData = SensorDataRequest(
-            timestamp = timestamp,
-            heartRate = heartRate,
-            skinTemperature = skinTemp,
-            userState = userState,
-            drinkAmount = if (userState == "음주 중") drinkAmount else null,
-            alcoholPercentage = if (userState == "음주 중") alcoholPercentage else null
-        )
+        // aws로 전송. 바로 전송됨
+        sendDataToAWS(timestamp, heartRate, userState, if (userState == "음주 중") drinkCount else null, if (userState == "음주 중") alcoholPercentage else null)
 
-        RetrofitClient.api.sendSensorData(requestData)
-            .enqueue(object : Callback<Void> {
-                override fun onResponse(call: Call<Void>, response: Response<Void>) {
-                    if (response.isSuccessful) {
-                        appendToTextView("서버에 데이터 전송 성공!")
-                    } else {
-                        appendToTextView("서버 응답 오류: ${response.code()}")
-                    }
-                }
-                override fun onFailure(call: Call<Void>, t: Throwable) {
-                    appendToTextView("서버 전송 실패: ${t.message}")
-                }
-            })
     }
-    // ▲
+
 }
